@@ -1,0 +1,44 @@
+{
+  "title": "🌬️ Surveillance Météo - Cotonou",
+  "panels": [
+    {
+      "title": "Vitesse du Vent (m/s)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "kafka_wind_speed_mps{city='Cotonou'}",
+          "legendFormat": "Vent {{ city }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "value": 0,  "color": "green"  },
+              { "value": 10, "color": "yellow" },
+              { "value": 15, "color": "red"    }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "🚨 Alerte Vent Dangereux",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "wind_alert_active{city='Cotonou'}",
+          "legendFormat": "Alerte"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "value": "0", "text": "✅ Normal",  "color": "green" },
+            { "value": "1", "text": "🚨 DANGER!", "color": "red"   }
+          ]
+        }
+      }
+    }
+  ]
+}
