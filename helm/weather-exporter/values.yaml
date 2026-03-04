@@ -1,0 +1,28 @@
+# ── Valeurs par défaut — surchargeable au déploiement ──────────
+
+replicaCount: 1
+
+image:
+  repository: weather-exporter
+  tag: "v1.0"
+  pullPolicy: IfNotPresent
+
+config:
+  city: "Cotonou"
+  scrapeInterval: "30"
+
+secret:
+  # NE PAS mettre la vraie clé ici non plus !
+  # On la passera avec --set secret.apiKey=xxx au déploiement
+  apiKey: "REMPLACE_MOI"
+
+service:
+  port: 8000
+
+resources:
+  limits:
+    cpu: "200m"      # 0.2 CPU max
+    memory: "128Mi"  # 128 Mo RAM max
+  requests:
+    cpu: "100m"      # 0.1 CPU garanti
+    memory: "64Mi"   # 64 Mo RAM garanti

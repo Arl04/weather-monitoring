@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: weather-exporter-svc
+  namespace: default
+  labels:
+    app: weather-exporter
+spec:
+  selector:
+    app: weather-exporter  # ← relie le Service au Pod via ce label
+  ports:
+    - protocol: TCP
+      port: 8000            # port du Service
+      targetPort: 8000      # port du conteneur
+  type: ClusterIP           # accessible uniquement dans le cluster

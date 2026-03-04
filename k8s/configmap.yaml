@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weather-config
+  namespace: default
+data:
+  # Configurations non sensibles → ConfigMap (pas Secret)
+  CITY: "Cotonou"
+  SCRAPE_INTERVAL: "30"

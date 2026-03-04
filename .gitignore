@@ -1,0 +1,2 @@
+# Secrets Kubernetes - Ne jamais commiter !
+k8s/secret.yaml

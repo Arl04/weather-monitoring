@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weather-exporter
+  namespace: default
+  labels:
+    app: weather-exporter
+spec:
+  replicas: 1          # 1 seul pod pour commencer
+  selector:
+    matchLabels:
+      app: weather-exporter
+  template:
+    metadata:
+      labels:
+        app: weather-exporter
+    spec:
+      containers:
+        - name: weather-exporter
+          image: weather-exporter:v1.0   # notre image Docker
+          ports:
+            - containerPort: 8000
+
+          # ── Variables depuis le Secret ──────────────────────────
+          env:
+            - name: OWM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: owm-secret       # nom du Secret
+                  key: OWM_API_KEY       # clé dans le Secret
+
+          # ── Variables depuis le ConfigMap ───────────────────────
+          envFrom:
+            - configMapRef:
+                name: weather-config     # injecte CITY et SCRAPE_INTERVAL
+
+          # ── Sécurité : cohérent avec notre Dockerfile ───────────
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+
+          # ── Santé du conteneur ──────────────────────────────────
+          # K8s vérifie que /metrics répond → sinon il redémarre le pod
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
