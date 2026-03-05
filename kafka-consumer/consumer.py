@@ -1,100 +1,82 @@
-import json
 import os
-import time
+import json
 from kafka import KafkaConsumer
-from kafka.errors import KafkaError
 from prometheus_client import start_http_server, Gauge
 
-# ─── Configuration ────────────────────────────────────────────
-KAFKA_BROKER  = os.getenv("KAFKA_BROKER", "kafka:9092")
-KAFKA_TOPIC   = os.getenv("KAFKA_TOPIC", "wind-data")
-KAFKA_GROUP   = os.getenv("KAFKA_GROUP", "prometheus-consumer-group")
-METRICS_PORT  = int(os.getenv("METRICS_PORT", "8001"))  # port différent du producer !
+# ── Configuration ───────────────────────────────────────────
+KAFKA_BROKER          = os.getenv("KAFKA_BROKER", "localhost:9092")
+KAFKA_TOPIC           = os.getenv("KAFKA_TOPIC", "wind-data")
+KAFKA_GROUP           = os.getenv("KAFKA_GROUP", "prometheus-consumer-group")
+WIND_ALERT_THRESHOLD  = float(os.getenv("WIND_ALERT_THRESHOLD", "15.0"))
+HEAT_ALERT_THRESHOLD  = float(os.getenv("HEAT_ALERT_THRESHOLD", "35.0"))
 
-# ─── Métriques Prometheus ─────────────────────────────────────
-# Gauge pour la vitesse du vent (lue depuis Kafka)
-wind_speed_gauge = Gauge(
+# ── Métriques Prometheus ────────────────────────────────────
+kafka_wind_gauge = Gauge(
     "kafka_wind_speed_mps",
     "Vitesse du vent lue depuis Kafka (m/s)",
     ["city"]
 )
-
-# Gauge pour détecter le vent dangereux (0 ou 1)
-# C'est ce que Grafana utilisera pour l'alerte !
+kafka_temp_gauge = Gauge(
+    "kafka_temperature_celsius",
+    "Température lue depuis Kafka (°C)",
+    ["city"]
+)
+kafka_humidity_gauge = Gauge(
+    "kafka_humidity_percent",
+    "Humidité lue depuis Kafka (%)",
+    ["city"]
+)
 wind_alert_gauge = Gauge(
     "wind_alert_active",
     "Alerte vent fort actif (1=danger, 0=normal)",
     ["city"]
 )
+heat_alert_gauge = Gauge(
+    "heat_alert_active",
+    "Alerte chaleur active (1=danger, 0=normal)",
+    ["city"]
+)
 
-# Seuil d'alerte : vent > 15 m/s = dangereux
-# (15 m/s ≈ 54 km/h = vent fort)
-WIND_ALERT_THRESHOLD = float(os.getenv("WIND_ALERT_THRESHOLD", "15.0"))
+# ── Boucle principale ───────────────────────────────────────
+def main():
+    print(f"[DÉMARRAGE] Serveur métriques actif → http://localhost:8001/metrics")
+    start_http_server(8001)
 
+    consumer = KafkaConsumer(
+        KAFKA_TOPIC,
+        bootstrap_servers=KAFKA_BROKER,
+        group_id=KAFKA_GROUP,
+        auto_offset_reset="earliest",
+        value_deserializer=lambda m: json.loads(m.decode("utf-8"))
+    )
 
-# ─── Logique d'alerte ─────────────────────────────────────────
-def process_message(message: dict):
-    """
-    Traite un message Kafka :
-    - Met à jour la métrique de vitesse
-    - Active/désactive l'alerte si seuil dépassé
-    """
-    city  = message.get("city", "unknown")
-    speed = message.get("wind_speed_mps", 0.0)
+    print(f"[KAFKA] Consumer connecté → topic: {KAFKA_TOPIC}")
 
-    # 1. Mise à jour de la vitesse
-    wind_speed_gauge.labels(city=city).set(speed)
-
-    # 2. Logique d'alerte
-    if speed > WIND_ALERT_THRESHOLD:
-        wind_alert_gauge.labels(city=city).set(1)   # 🚨 DANGER
-        print(f"[ALERTE] {city} → Vent dangereux : {speed} m/s "
-              f"(seuil: {WIND_ALERT_THRESHOLD} m/s)")
-    else:
-        wind_alert_gauge.labels(city=city).set(0)   # ✅ Normal
-        print(f"[OK] {city} → Vent normal : {speed} m/s")
-
-
-# ─── Initialisation du Consumer Kafka ─────────────────────────
-def create_kafka_consumer() -> KafkaConsumer:
-    """
-    Crée un consumer Kafka avec retry automatique.
-    Attend que Kafka soit prêt (important au démarrage K8s).
-    """
-    while True:   # retry infini jusqu'à connexion
-        try:
-            consumer = KafkaConsumer(
-                KAFKA_TOPIC,
-                bootstrap_servers=KAFKA_BROKER,
-                group_id=KAFKA_GROUP,
-                # Désérialise les bytes → dict Python
-                value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-                # Si nouveau groupe : lire depuis le début
-                auto_offset_reset="earliest",
-                # Confirme automatiquement la lecture
-                enable_auto_commit=True
-            )
-            print(f"[KAFKA] Consumer connecté → topic: {KAFKA_TOPIC}")
-            return consumer
-
-        except KafkaError as e:
-            print(f"[KAFKA] En attente du broker... ({e})")
-            time.sleep(5)   # retry toutes les 5 secondes
-
-
-# ─── Point d'entrée ───────────────────────────────────────────
-if __name__ == "__main__":
-    # Démarre le serveur de métriques sur port 8001
-    start_http_server(METRICS_PORT)
-    print(f"[DÉMARRAGE] Métriques consumer → http://localhost:{METRICS_PORT}/metrics")
-
-    consumer = create_kafka_consumer()
-
-    # Boucle de lecture infinie
     for message in consumer:
-        try:
-            data = message.value   # déjà désérialisé grâce au value_deserializer
-            print(f"[MESSAGE] Reçu : {data}")
-            process_message(data)
-        except (KeyError, TypeError) as e:
-            print(f"[ERREUR] Message invalide : {e} → {message.value}")
+        data = message.value
+        city = data.get("city", "unknown")
+
+        wind  = data.get("wind_speed", 0)
+        temp  = data.get("temperature", 0)
+        humid = data.get("humidity", 0)
+
+        # Mise à jour métriques
+        kafka_wind_gauge.labels(city=city).set(wind)
+        kafka_temp_gauge.labels(city=city).set(temp)
+        kafka_humidity_gauge.labels(city=city).set(humid)
+
+        # Alertes
+        wind_alert = 1 if wind > WIND_ALERT_THRESHOLD else 0
+        heat_alert = 1 if temp > HEAT_ALERT_THRESHOLD else 0
+        wind_alert_gauge.labels(city=city).set(wind_alert)
+        heat_alert_gauge.labels(city=city).set(heat_alert)
+
+        print(
+            f"[MESSAGE] {city} → "
+            f"Vent: {wind} m/s {'🚨' if wind_alert else '✅'} | "
+            f"Temp: {temp}°C {'🔥' if heat_alert else '✅'} | "
+            f"Humidité: {humid}%"
+        )
+
+if __name__ == "__main__":
+    main()

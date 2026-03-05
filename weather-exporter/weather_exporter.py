@@ -1,102 +1,92 @@
-import time
 import os
-import json
+import time
 import requests
 from prometheus_client import start_http_server, Gauge
-from kafka import KafkaProducer
-from kafka.errors import KafkaError
 
-# ─── Configuration ────────────────────────────────────────────
-API_KEY        = os.getenv("OWM_API_KEY", "VOTRE_CLE_ICI")
-CITY           = os.getenv("CITY", "Cotonou")
-INTERVAL       = int(os.getenv("SCRAPE_INTERVAL", "30"))
-KAFKA_BROKER   = os.getenv("KAFKA_BROKER", "kafka:9092")
-KAFKA_TOPIC    = os.getenv("KAFKA_TOPIC", "wind-data")
+# ── Configuration ──────────────────────────────────────────
+OWM_API_KEY       = os.getenv("OWM_API_KEY", "")
+CITY              = os.getenv("CITY", "Cotonou")
+SCRAPE_INTERVAL   = int(os.getenv("SCRAPE_INTERVAL", "30"))
+KAFKA_BROKER      = os.getenv("KAFKA_BROKER", "localhost:9092")
+KAFKA_TOPIC       = os.getenv("KAFKA_TOPIC", "wind-data")
 
-# ─── Métrique Prometheus (inchangée) ──────────────────────────
+# ── Métriques Prometheus ────────────────────────────────────
 wind_speed_gauge = Gauge(
     "wind_speed_mps",
     "Vitesse du vent en mètres par seconde",
     ["city"]
 )
+temperature_gauge = Gauge(
+    "temperature_celsius",
+    "Température en degrés Celsius",
+    ["city"]
+)
+humidity_gauge = Gauge(
+    "humidity_percent",
+    "Humidité relative en pourcentage",
+    ["city"]
+)
 
-# ─── Initialisation du Producteur Kafka ───────────────────────
-def create_kafka_producer() -> KafkaProducer | None:
-    """
-    Crée un producteur Kafka.
-    Retourne None si Kafka n'est pas disponible
-    (le script continue à exposer les métriques Prometheus)
-    """
+# ── Récupération données OpenWeatherMap ─────────────────────
+def fetch_weather(city: str) -> dict:
+    url = (
+        f"https://api.openweathermap.org/data/2.5/weather"
+        f"?q={city}&appid={OWM_API_KEY}&units=metric"
+    )
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+    return {
+        "city":        city,
+        "wind_speed":  data["wind"]["speed"],
+        "temperature": data["main"]["temp"],
+        "humidity":    data["main"]["humidity"],
+    }
+
+# ── Kafka Producer ──────────────────────────────────────────
+def get_producer():
     try:
-        producer = KafkaProducer(
+        from kafka import KafkaProducer
+        import json
+        return KafkaProducer(
             bootstrap_servers=KAFKA_BROKER,
-            # Sérialise le dict Python en JSON puis en bytes
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            # Attend confirmation d'écriture du broker
-            acks="all",
-            retries=3
+            value_serializer=lambda v: json.dumps(v).encode("utf-8")
         )
-        print(f"[KAFKA] Connecté → {KAFKA_BROKER}")
-        return producer
-    except KafkaError as e:
+    except Exception as e:
         print(f"[KAFKA] Connexion impossible : {e}")
-        print("[KAFKA] Mode dégradé : uniquement Prometheus")
         return None
 
-# ─── Collecte + Publication ───────────────────────────────────
-def fetch_wind_speed(city: str) -> float | None:
-    url = "https://api.openweathermap.org/data/2.5/weather"
-    params = {"q": city, "appid": API_KEY, "units": "metric"}
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        wind_speed = data["wind"]["speed"]
-        print(f"[OK] {city} → Vent : {wind_speed} m/s")
-        return wind_speed
-    except requests.exceptions.HTTPError as e:
-        print(f"[ERREUR HTTP] {e}")
-    except requests.exceptions.ConnectionError:
-        print("[ERREUR] Impossible de joindre l'API OpenWeatherMap")
-    except KeyError:
-        print("[ERREUR] Format de réponse inattendu")
-    return None
-
-
-def publish_to_kafka(producer: KafkaProducer, city: str, speed: float):
-    """
-    Publie la donnée dans le topic Kafka sous forme de JSON.
-    """
-    message = {
-        "city": city,
-        "wind_speed_mps": speed,
-        "timestamp": int(time.time())   # Unix timestamp
-    }
-    try:
-        # Envoi asynchrone → on attend la confirmation avec .get()
-        future = producer.send(KAFKA_TOPIC, value=message)
-        future.get(timeout=10)          # bloque jusqu'à confirmation
-        print(f"[KAFKA] Publié → {message}")
-    except KafkaError as e:
-        print(f"[KAFKA] Échec publication : {e}")
-
-
-# ─── Point d'entrée ───────────────────────────────────────────
-if __name__ == "__main__":
+# ── Boucle principale ───────────────────────────────────────
+def main():
+    print(f"[DÉMARRAGE] Serveur métriques actif → http://localhost:8000/metrics")
     start_http_server(8000)
-    print(f"[DÉMARRAGE] Métriques → http://localhost:8000/metrics")
-
-    kafka_producer = create_kafka_producer()
+    producer = get_producer()
 
     while True:
-        speed = fetch_wind_speed(CITY)
+        try:
+            weather = fetch_weather(CITY)
 
-        if speed is not None:
-            # 1. Mise à jour Prometheus (comme avant)
-            wind_speed_gauge.labels(city=CITY).set(speed)
+            # Mise à jour métriques Prometheus
+            wind_speed_gauge.labels(city=CITY).set(weather["wind_speed"])
+            temperature_gauge.labels(city=CITY).set(weather["temperature"])
+            humidity_gauge.labels(city=CITY).set(weather["humidity"])
 
-            # 2. Publication Kafka (nouveau !)
-            if kafka_producer:
-                publish_to_kafka(kafka_producer, CITY, speed)
+            print(
+                f"[OK] {CITY} → "
+                f"Vent: {weather['wind_speed']} m/s | "
+                f"Temp: {weather['temperature']}°C | "
+                f"Humidité: {weather['humidity']}%"
+            )
 
-        time.sleep(INTERVAL)
+            # Envoi vers Kafka
+            if producer:
+                producer.send(KAFKA_TOPIC, weather)
+                print(f"[KAFKA] Message envoyé → {KAFKA_TOPIC}")
+
+        except Exception as e:
+            print(f"[ERREUR] {e}")
+
+        time.sleep(SCRAPE_INTERVAL)
+
+if __name__ == "__main__":
+    main()
