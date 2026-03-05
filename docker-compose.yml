@@ -55,7 +55,7 @@ services:
     environment:
       KAFKA_BROKER: kafka:9092
       KAFKA_TOPIC: wind-data
-      WIND_ALERT_THRESHOLD: "15.0"
+      WIND_ALERT_THRESHOLD: "15.0" #15.0
 
   # ── 4. Prometheus ────────────────────────────────────────────
   prometheus:
